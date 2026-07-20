@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>putm_recorder</name>
+  <version>0.0.0</version>
+  <description>ROS 2 bag recording node for PUT Motorsport</description>
+  <maintainer email="blazejczykolaf@gmail.com">blazu</maintainer>
+  <license>MIT</license>
+
+  <depend>rclpy</depend>
+  <depend>putm_vcl_interfaces</depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
