@@ -1,0 +1,3 @@
+/putm_recorder/rec_node:
+  ros__parameters:
+    recording_prefix: "testowe"

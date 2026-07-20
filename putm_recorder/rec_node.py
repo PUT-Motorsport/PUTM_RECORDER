@@ -15,6 +15,8 @@ class RecNode(Node):
         self.process = None
         self.stop_timer = None
 
+        self.declare_parameter('recording_prefix', 'recording')
+
         self.topics_to_record = [
             "/imu/acceleration",
             "/imu/angular_velocity",
@@ -87,6 +89,7 @@ class RecNode(Node):
 
     def start_recording(self):
         now = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        prefix = self.get_parameter('recording_prefix').get_parameter_value().string_value
         putm_dir = "/home/putm/rosbag"
         fallback_dir = "/tmp/rosbag"
 
@@ -97,7 +100,7 @@ class RecNode(Node):
             os.makedirs(fallback_dir, exist_ok=True)
             base_dir = fallback_dir
 
-        filename = os.path.join(base_dir, f"recording_{now}")
+        filename = os.path.join(base_dir, f"{prefix}_{now}")
 
         cmd = ["ros2", "bag", "record", "-s", "mcap", "-o", filename] + self.topics_to_record
         

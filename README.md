@@ -1,4 +1,4 @@
-# putm_recorder
+# PUTM_RECORDER
 
 ROS 2 package for automatic rosbag recording triggered by the RTD (Ready To Drive) signal.
 
@@ -56,6 +56,7 @@ ros2 launch putm_recorder putm_recorder.launch.py
 
 **Terminal 2 — verify node is running:**
 ```bash
+source /install/setup.bash
 ros2 node list
 # expected: /putm_recorder/rec_node
 
