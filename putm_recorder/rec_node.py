@@ -1,11 +1,21 @@
 #!/usr/bin/env python3
 
+from pathlib import Path
 import rclpy
 from rclpy.node import Node
-from putm_vcl_interfaces.msg import Rtd
+from putm_vcl_interfaces.msg import Rtd, AmkActualValues1, AmkActualValues2
 import subprocess
 import datetime
 import os
+import yaml
+
+AMK_WHEELS = {
+    "/putm_vcl/amk/front/left":  "front_left",
+    "/putm_vcl/amk/front/right": "front_right",
+    "/putm_vcl/amk/rear/left":   "rear_left",
+    "/putm_vcl/amk/rear/right":  "rear_right",
+}
+
 
 class RecNode(Node):
     def __init__(self):
@@ -14,8 +24,28 @@ class RecNode(Node):
         self.recording = False
         self.process = None
         self.stop_timer = None
+        self.current_bag_path = None
+
+        self.amk_error_events: dict[str, list] = {w: [] for w in AMK_WHEELS.values()}
 
         self.declare_parameter('recording_prefix', 'recording')
+
+        for topic_prefix, wheel in AMK_WHEELS.items():
+            self.create_subscription(
+                AmkActualValues1,
+                f"{topic_prefix}/actual_values1",
+                self._make_av1_callback(wheel),
+                10,
+            )
+            self.create_subscription(
+                AmkActualValues2,
+                f"{topic_prefix}/actual_values2",
+                self._make_av2_callback(wheel),
+                10,
+            )
+
+        self._prev_error: dict[str, bool] = {w: False for w in AMK_WHEELS.values()}
+        self._prev_warn:  dict[str, bool] = {w: False for w in AMK_WHEELS.values()}
 
         self.topics_to_record = [
             "/imu/acceleration",
@@ -65,17 +95,70 @@ class RecNode(Node):
             "/yaw_ref",
         ]
 
+    def _make_av1_callback(self, wheel: str):
+        def callback(msg: AmkActualValues1):
+            if not self.recording:
+                return
+            now_ns = self.get_clock().now().nanoseconds
+            status = msg.amk_status
+
+            if status.error and not self._prev_error[wheel]:
+                self.amk_error_events[wheel].append({
+                    "timestamp_ns": now_ns,
+                    "type": "error_flag_set",
+                    "error": True,
+                    "warn": bool(status.warn),
+                    "derating": bool(status.derating),
+                })
+                self.get_logger().warn(f"AMK {wheel}: ERROR flag raised!")
+
+            # Rejestruj zbocze narastające flagi warn
+            if status.warn and not self._prev_warn[wheel]:
+                self.amk_error_events[wheel].append({
+                    "timestamp_ns": now_ns,
+                    "type": "warn_flag_set",
+                    "error": bool(status.error),
+                    "warn": True,
+                    "derating": bool(status.derating),
+                })
+                self.get_logger().warn(f"AMK {wheel}: WARN flag raised!")
+
+            self._prev_error[wheel] = bool(status.error)
+            self._prev_warn[wheel]  = bool(status.warn)
+        return callback
+
+    def _make_av2_callback(self, wheel: str):
+        def callback(msg: AmkActualValues2):
+            if not self.recording:
+                return
+            if msg.error_info != 0:
+                now_ns = self.get_clock().now().nanoseconds
+                last = self.amk_error_events[wheel]
+                if not last or last[-1].get("error_info") != msg.error_info:
+                    self.amk_error_events[wheel].append({
+                        "timestamp_ns": now_ns,
+                        "type": "error_info_code",
+                        "error_info": int(msg.error_info),
+                        "temp_motor_raw":    int(msg.temp_motor),
+                        "temp_inverter_raw": int(msg.temp_inverter),
+                        "temp_igbt_raw":     int(msg.temp_igbt),
+                    })
+                    self.get_logger().warn(
+                        f"AMK {wheel}: error_info=0x{msg.error_info:04X}"
+                    )
+        return callback
+
     def rtd_callback(self, msg):
         if msg.state:
             if not self.recording:
                 self.get_logger().info("Car is ready. Starting data recording.")
                 self.start_recording()
-            
+
             if self.stop_timer:
                 self.get_logger().info("Car became ready again before timeout. Canceling stop timer.")
                 self.stop_timer.cancel()
                 self.stop_timer = None
-                
+
         elif not msg.state and self.recording and not self.stop_timer:
             self.get_logger().info("Car is not ready. Stopping data recording after 20 seconds.")
             self.stop_timer = self.create_timer(20.0, self.timer_callback)
@@ -103,8 +186,16 @@ class RecNode(Node):
         filename = os.path.join(base_dir, f"{prefix}_{now}")
 
         cmd = ["ros2", "bag", "record", "-s", "mcap", "-o", filename] + self.topics_to_record
-        
+
         try:
+            self.current_bag_path = filename
+            # Resetuj zdarzenia błędów przed nową sesją
+            for wheel in AMK_WHEELS.values():
+                self.amk_error_events[wheel].clear()
+            for wheel in AMK_WHEELS.values():
+                self._prev_error[wheel] = False
+                self._prev_warn[wheel]  = False
+
             self.process = subprocess.Popen(cmd)
             self.recording = True
             self.get_logger().info(f"Started recording with PID: {self.process.pid}")
@@ -114,10 +205,57 @@ class RecNode(Node):
     def stop_recording(self):
         if self.recording and self.process:
             self.get_logger().info(f"Stopping process (PID: {self.process.pid})...")
-            self.process.terminate() 
-            self.process.wait()     
+            self.process.terminate()
+            self.process.wait()
             self.recording = False
             self.get_logger().info("Process ros2 bag record completed.")
+            self.append_metadata()
+
+    def append_metadata(self):
+        if not self.current_bag_path:
+            return
+
+        yaml_path = Path(self.current_bag_path) / "metadata.yaml"
+
+        if not yaml_path.exists():
+            self.get_logger().warn(f"metadata.yaml not found at {yaml_path}")
+            return
+
+        try:
+            with open(yaml_path, 'r') as f:
+                data = yaml.safe_load(f)
+
+            errors_summary = {}
+            for wheel, events in self.amk_error_events.items():
+                if events:
+                    errors_summary[wheel] = events
+
+            total_errors = sum(
+                1 for events in self.amk_error_events.values()
+                for e in events if e.get("type") in ("error_flag_set", "error_info_code")
+            )
+
+            data["putm_session"] = {
+                "recorded_at": datetime.datetime.now().isoformat(),
+                "any_inverter_error": total_errors > 0,
+                "total_error_events": total_errors,
+                "inverter_errors": errors_summary if errors_summary else None,
+            }
+
+            with open(yaml_path, 'w') as f:
+                yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
+
+            if total_errors > 0:
+                self.get_logger().warn(
+                    f"Session ended with {total_errors} inverter error event(s). "
+                    f"Details saved to {yaml_path}"
+                )
+            else:
+                self.get_logger().info(f"metadata.yaml updated — no inverter errors. ({yaml_path})")
+
+        except Exception as e:
+            self.get_logger().error(f"Failed to update metadata.yaml: {e}")
+
 
 def main(args=None):
     rclpy.init(args=args)
@@ -125,6 +263,7 @@ def main(args=None):
     rclpy.spin(node)
     node.destroy_node()
     rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()
