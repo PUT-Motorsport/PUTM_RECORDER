@@ -96,6 +96,12 @@ class RecNode(Node):
         ]
 
     def _make_av1_callback(self, wheel: str):
+        """
+        Factory method creating a callback function for AmkActualValues1 topic.
+        
+        Closure concept: 'wheel' is captured by the inner function scope,
+        allowing a single factory to handle all 4 independent wheel topics.
+        """
         def callback(msg: AmkActualValues1):
             if not self.recording:
                 return
@@ -112,7 +118,6 @@ class RecNode(Node):
                 })
                 self.get_logger().warn(f"AMK {wheel}: ERROR flag raised!")
 
-            # Rejestruj zbocze narastające flagi warn
             if status.warn and not self._prev_warn[wheel]:
                 self.amk_error_events[wheel].append({
                     "timestamp_ns": now_ns,
@@ -128,6 +133,12 @@ class RecNode(Node):
         return callback
 
     def _make_av2_callback(self, wheel: str):
+        """
+        Factory method for AmkActualValues2 topic.
+        
+        Logs active error codes (error_info != 0) along with thermal readings 
+        from the motor and IGBT power modules.
+        """
         def callback(msg: AmkActualValues2):
             if not self.recording:
                 return
@@ -189,7 +200,6 @@ class RecNode(Node):
 
         try:
             self.current_bag_path = filename
-            # Resetuj zdarzenia błędów przed nową sesją
             for wheel in AMK_WHEELS.values():
                 self.amk_error_events[wheel].clear()
             for wheel in AMK_WHEELS.values():
@@ -211,6 +221,7 @@ class RecNode(Node):
             self.get_logger().info("Process ros2 bag record completed.")
             self.append_metadata()
 
+    #Function for appending the info about inverters into metadata.yaml file
     def append_metadata(self):
         if not self.current_bag_path:
             return
